@@ -1,0 +1,20 @@
+# Ignore raw sequencing data reads
+*.fastq.gz
+*.fastq
+*.fq.gz
+*.fq
+
+# Ignore heavy database folders
+minikraken2_v2/
+seroba_db/
+
+# Ignore massive temporary tool directories
+Snippy_Isolate/
+Assembly_Output/spades_output/
+
+# Ignore heavy compressed files or logs
+*.tar.gz
+*.zip
+*.log
+.DS_Store
+
