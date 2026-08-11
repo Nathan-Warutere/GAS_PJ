@@ -1,0 +1,115 @@
+# Streptococcus pyogenes Genomics Pipeline
+
+---
+
+#### Step 1: Initial Quality Control Analysis
+```bash
+fastqc Raw-Data/*.fastq.gz -o QC_Reports/
+multiqc QC_Reports/ -o QC_Reports/initial_multiqc/
+```
+*   **Flag Used**: `-o`
+*   **Purpose**: Directs output files into a designated folder.
+
+---
+
+#### Step 2: Environmental Trim & Host Decontamination
+```bash
+bbduk.sh in1=Raw-Data/R1.fq.gz in2=Raw-Data/R2.fq.gz out1=trimmed_R1.fq.gz out2=trimmed_R2.fq.gz ref=adapters.fa ktrim=r k=23 mink=11 hdist=1 qtrim=rl trimq=20 minlen=50
+
+bbmap.sh in=trimmed_R1.fq.gz in2=trimmed_trimmed_R2.fq.gz ref=human_hg38.fa outu1=clean_R1.fq.gz outu2=clean_R2.fq.gz semiperfectmode=t
+```
+*   **Flags Used**: `ktrim=r k=23 mink=11`
+*   **Purpose**: Trims matching adapter sequences from the right side of reads.
+*   **Flags Used**: `qtrim=rl trimq=20`
+*   **Purpose**: Trims left and right ends failing Q20 quality.
+*   **Flag Used**: `minlen=50`
+*   **Purpose**: Deletes fragments shorter than 50 base pairs.
+*   **Flags Used**: `outu1 / outu2`
+*   **Purpose**: Saves only clean reads that do not match the human host genome.
+
+---
+
+#### Step 3: Metagenomic Background Audit
+```bash
+kraken2 --db minikraken2_v2 --threads 8 --paired clean_R1.fq.gz clean_R2.fq.gz --output kraken.out --report kraken.report
+
+bracken -d minikraken2_v2 -i kraken.report -o bracken.out -r 150 -l S
+```
+*   **Flag Used**: `--report`
+*   **Purpose**: Creates a clean taxonomic distribution table.
+*   **Flag Used**: `--paired`
+*   **Purpose**: Mentions input files are paired-end sequences.
+*   **Flag Used**: `-r 150`
+*   **Purpose**: Tells the database that read lengths are 150 base pairs.
+*   **Flag Used**: `-l S`
+*   **Purpose**: Forces profiling strictly to the Species level.
+
+---
+
+#### Step 4: Secondary Quality Post-Clean Check
+```bash
+fastqc clean_R1.fq.gz clean_R2.fq.gz -o QC_Reports/post_clean/
+multiqc QC_Reports/post_clean/ -o QC_Reports/final_multiqc/
+```
+*   **Purpose**: Ensures all contamination has been removed before assembly.
+
+---
+
+#### Step 5: De Novo Assembly & Metric Scoring
+```bash
+spades.py --isolate -1 clean_R1.fq.gz -2 clean_R2.fq.gz -o Assembly_Output/ -t 8
+
+quast.py Assembly_Output/scaffolds.fasta -o Assembly_Metrics/
+```
+*   **Flag Used**: `--isolate`
+*   **Purpose**: Optimizes assembly for high-coverage, single-colony genomes.
+
+---
+
+#### Step 6: Horizontal Gene Recombination Analytics
+```bash
+bacter-launcher -i Assembly_Output/scaffolds.fasta -o Bacter_ARG/
+```
+*   **Purpose**: Identifies horizontal gene transfer points in your samples.
+
+---
+
+#### Step 7: Typing, Resisome & Virulence Screening
+```bash
+abricate --db card Assembly_Output/scaffolds.fasta > card_amr.txt
+abricate --db vfdb Assembly_Output/scaffolds.fasta > virulence_factors.txt
+seroba run_pipeline seroba_db/ clean_R1.fq.gz clean_R2.fq.gz Seroba_Output/
+emmtyper Assembly_Output/scaffolds.fasta > emm_typing.txt
+mlst --legacy --db spyogenes Assembly_Output/scaffolds.fasta > mlst_results.txt
+```
+*   **Flag Used**: `--db card`
+*   **Purpose**: Checks against the Comprehensive Antibiotic Resistance Database.
+*   **Flag Used**: `--db vfdb`
+*   **Purpose**: Checks against the Virulence Factor Database.
+*   **Flag Used**: `--db spyogenes`
+*   **Purpose**: Pulls standard MLST data specifically for S. pyogenes.
+
+---
+
+#### Step 8: Multi-Isolate Pan-Genomics & Core Variant Mapping
+```bash
+snippy --outdir Snippy_Isolate/ --ref spyogenes_ref.gbk --R1 clean_R1.fq.gz --R2 clean_R2.fq.gz
+snippy-core --outdir Core_SNP_Outputs/ Snippy_Isolate/*
+panaroo -i Assembly_Output/*.gff -o Pangenome_Outputs/ --clean-mode strict
+```
+*   **Flag Used**: `--clean-mode strict`
+*   **Purpose**: Eliminates low-quality fragments from the final pan-genome.
+
+---
+
+#### Step 9: Phylogenomics & Pan-GWAS Trait Linking
+```bash
+iqtree -s Core_SNP_Outputs/core.aln.clean.full.fasta -m MFP -bb 1000 -nt AUTO
+scoary -a clinical_traits.csv -c Pangenome_Outputs/gene_presence_absence.csv -o GWAS_Results/
+```
+*   **Flag Used**: `-m MFP`
+*   **Purpose**: Automatically tests substitution models to pick the best fit.
+*   **Flag Used**: `-bb 1000`
+*   **Purpose**: Runs 1,000 bootstrap replicates for tree accuracy support.
+*   **Flag Used**: `-nt AUTO`
+*   **Purpose**: Auto-scales your processing threads to run faster.
