@@ -1,0 +1,58 @@
+#!/bin/bash
+# ==============================================================================
+# S. pyogenes Bacterial Genomics Automation Pipeline
+# Run this script using: bash pipeline.sh
+# ==============================================================================
+
+set -e # Exit immediately if any tool command fails
+
+echo "=== [1/9] Running Initial Quality Control (FastQC & MultiQC) ==="
+mkdir -p QC_Reports/initial_multiqc
+fastqc Raw-Data/*.fastq.gz -o QC_Reports/
+multiqc QC_Reports/ -o QC_Reports/initial_multiqc/
+
+echo "=== [2/9] Cleaning Reads & Removing Host Contamination (BBTools) ==="
+# Adjust filenames (R1.fq.gz / R2.fq.gz) as necessary to match your real files
+bbduk.sh in1=Raw-Data/R1.fq.gz in2=Raw-Data/R2.fq.gz out1=trimmed_R1.fq.gz out2=trimmed_R2.fq.gz ref=adapters.fa ktrim=r k=23 mink=11 hdist=1 qtrim=rl trimq=20 minlen=50
+bbmap.sh in=trimmed_R1.fq.gz in2=trimmed_R2.fq.gz ref=human_hg38.fa outu1=clean_R1.fq.gz outu2=clean_R2.fq.gz semiperfectmode=t
+
+echo "=== [3/9] Metagenomic Background Audit (Kraken2 & Bracken) ==="
+kraken2 --db minikraken2_v2 --threads 8 --paired clean_R1.fq.gz clean_R2.fq.gz --output kraken.out --report kraken.report
+bracken -d minikraken2_v2 -i kraken.report -o bracken.out -r 150 -l S
+
+echo "=== [4/9] Running Post-Clean Quality Control ==="
+mkdir -p QC_Reports/post_clean QC_Reports/final_multiqc
+fastqc clean_R1.fq.gz clean_R2.fq.gz -o QC_Reports/post_clean/
+multiqc QC_Reports/post_clean/ -o QC_Reports/final_multiqc/
+
+echo "=== [5/9] Genome Assembly & Quality Evaluation (SPAdes & QUAST) ==="
+mkdir -p Assembly_Output Assembly_Metrics
+spades.py --isolate -1 clean_R1.fq.gz -2 clean_R2.fq.gz -o Assembly_Output/ -t 8
+quast.py Assembly_Output/scaffolds.fasta -o Assembly_Metrics/
+
+echo "=== [6/9] Recombination Analytics (Bacter) ==="
+mkdir -p Bacter_ARG
+bacter-launcher -i Assembly_Output/scaffolds.fasta -o Bacter_ARG/
+
+echo "=== [7/9] Downstream Profile Typing (Abricate, SeroBA, Emmtyper, MLST) ==="
+mkdir -p Seroba_Output
+abricate --db card Assembly_Output/scaffolds.fasta > card_amr.txt
+abricate --db vfdb Assembly_Output/scaffolds.fasta > virulence_factors.txt
+seroba run_pipeline seroba_db/ clean_R1.fq.gz clean_R2.fq.gz Seroba_Output/
+emmtyper Assembly_Output/scaffolds.fasta > emm_typing.txt
+mlst --legacy --db spyogenes Assembly_Output/scaffolds.fasta > mlst_results.txt
+
+echo "=== [8/9] Variant & Pan-Genome Mapping (Snippy & Panaroo) ==="
+mkdir -p Core_SNP_Outputs Pangenome_Outputs
+snippy --outdir Snippy_Isolate/ --ref spyogenes_ref.gbk --R1 clean_R1.fq.gz --R2 clean_R2.fq.gz
+snippy-core --outdir Core_SNP_Outputs/ Snippy_Isolate/*
+panaroo -i Assembly_Output/*.gff -o Pangenome_Outputs/ --clean-mode strict
+
+echo "=== [9/9] Phylogenomics & Pan-GWAS Trait Association (IQ-TREE & Scoary) ==="
+mkdir -p GWAS_Results
+iqtree -s Core_SNP_Outputs/core.aln.clean.full.fasta -m MFP -bb 1000 -nt AUTO
+scoary -a clinical_traits.csv -c Pangenome_Outputs/gene_presence_absence.csv -o GWAS_Results/
+
+echo "=============================================================================="
+echo "🎉 Pipeline Completed Successfully! Check your directories for final results."
+echo "=============================================================================="
